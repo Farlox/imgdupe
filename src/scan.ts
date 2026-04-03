@@ -45,6 +45,8 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
   const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
 
   const hashMap = new Map<string, string[]>();
+  const flushInterval = setInterval(() => { cache.save().catch(console.error); }, 30_000);
+
   await Promise.all(allPaths.map(async (filePath) => {
     try {
       const hash = await cachedSha256(filePath, cache);
@@ -59,6 +61,7 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
     }
   }));
 
+  clearInterval(flushInterval);
   const groups: DuplicateGroup[] = [];
   for (const [hash, paths] of hashMap) {
     if (paths.length > 1) groups.push({ hash, paths });
@@ -91,6 +94,7 @@ export async function findSimilar(dirs: string[], threshold = 10, cache: HashCac
       ? ` — ETA ${formatEta(Math.round((elapsed / completed) * (total - completed)))}`
       : '';
     process.stderr.write(`  hashing: ${completed}/${total} (${pct}%)${eta}\n`);
+    cache.save().catch(console.error);
   }, 30_000);
 
   const settled = await Promise.all(
