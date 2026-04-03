@@ -99,10 +99,6 @@ function renderFolderAnalysis(pairs: FolderPair[]): string {
   </section>`;
 }
 
-function fileUrl(absPath: string): string {
-  return 'file://' + absPath;
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -113,7 +109,7 @@ function fmtBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderGroup(group: DuplicateGroup, index: number): string {
+function renderGroup(group: DuplicateGroup, index: number, toUrl: (absPath: string) => string): string {
   const sizes = group.sizes;
   const sizesVary = sizes != null && new Set(sizes).size > 1;
   const maxSize = sizesVary ? Math.max(...sizes!) : null;
@@ -124,10 +120,11 @@ function renderGroup(group: DuplicateGroup, index: number): string {
       ? `<span class="file-size${size === maxSize ? ' file-size-largest' : ''}">${fmtBytes(size)}</span>`
       : '';
     const folder = dirname(p);
+    const url = escapeHtml(toUrl(p));
     return `
     <figure class="img-card">
-      <a href="${escapeHtml(fileUrl(p))}" target="_blank">
-        <img src="${escapeHtml(fileUrl(p))}" alt="${escapeHtml(basename(p))}" loading="lazy" />
+      <a href="${url}" target="_blank">
+        <img src="${url}" alt="${escapeHtml(basename(p))}" loading="lazy" />
       </a>
       <figcaption title="${escapeHtml(p)}">${escapeHtml(p)}${sizeTag}
         <button class="copy-btn" data-path="${escapeHtml(folder)}" title="Copy folder path">📋</button>
@@ -146,13 +143,17 @@ function renderGroup(group: DuplicateGroup, index: number): string {
   </section>`;
 }
 
-export function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): string {
+export function renderHtml(
+  data: ScanOutput,
+  folderFileCounts: Map<string, number>,
+  toUrl: (absPath: string) => string = (p) => 'file://' + p,
+): string {
   const modeLabel = data.mode === 'exact'
     ? 'Exact (SHA-256)'
     : `Perceptual pHash — threshold ${data.threshold}`;
 
   const sorted = [...data.groups].sort((a, b) => b.paths.length - a.paths.length);
-  const groups = sorted.map((g, i) => renderGroup(g, i)).join('');
+  const groups = sorted.map((g, i) => renderGroup(g, i, toUrl)).join('');
   const folderAnalysis = renderFolderAnalysis(analyzeFolderPairs(data.groups, folderFileCounts));
 
   const folderList = data.scannedFolders

@@ -72,11 +72,34 @@ ${rows.length > 0
   res.end(body);
 }
 
+const IMAGE_MIME: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', tiff: 'image/tiff', tif: 'image/tiff',
+  heic: 'image/heic', heif: 'image/heif', avif: 'image/avif',
+};
+
+async function serveImageFile(filePath: string, res: ServerResponse): Promise<void> {
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+  const mimeType = IMAGE_MIME[ext];
+  if (!mimeType) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+    return;
+  }
+  const data = await readFile(filePath);
+  res.writeHead(200, { 'Content-Type': mimeType });
+  res.end(data);
+}
+
+function toHttpUrl(absPath: string): string {
+  return absPath; // absolute filesystem path used directly as the URL path
+}
+
 async function serveReport(file: string, res: ServerResponse): Promise<void> {
   const filePath = resolveFile(file);
   const data = await readScanOutput(filePath);
   const folderFileCounts = await buildFolderFileCounts(data.groups);
-  const html = renderHtml(data, folderFileCounts);
+  const html = renderHtml(data, folderFileCounts, toHttpUrl);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
 }
@@ -113,8 +136,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     await serveResult(file, res);
   } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not Found');
+    await serveImageFile(pathname, res);
   }
 }
 
