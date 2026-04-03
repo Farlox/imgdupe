@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { hashFile } from './hash.js';
 import { phashFile, hammingDistance } from './phash.js';
@@ -39,8 +39,16 @@ async function cachedPhash(filePath: string, cache: HashCache): Promise<bigint> 
   return hash;
 }
 
-export type DuplicateGroup = { hash: string; paths: string[] };
+export type DuplicateGroup = { hash: string; paths: string[]; sizes: number[] };
 export type ScanResult = { totalScanned: number; groups: DuplicateGroup[] };
+
+async function withConcurrency<T>(limit: number, items: T[], fn: (item: T) => Promise<void>): Promise<void> {
+  const queue = items.slice();
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (queue.length > 0) await fn(queue.shift()!);
+  });
+  await Promise.all(workers);
+}
 
 export async function findDuplicates(dirs: string[], cache: HashCache, skipOnline = true): Promise<ScanResult> {
   const allPaths = await filterOnlineOnlyFiles(
@@ -48,27 +56,45 @@ export async function findDuplicates(dirs: string[], cache: HashCache, skipOnlin
     skipOnline,
   );
 
-  const hashMap = new Map<string, string[]>();
-  const flushInterval = setInterval(() => { cache.save().catch(console.error); }, 30_000);
+  const hashMap = new Map<string, { paths: string[]; sizes: number[] }>();
+  const total = allPaths.length;
+  let completed = 0;
+  const startTime = Date.now();
 
-  await Promise.all(allPaths.map(async (filePath) => {
+  console.log(`${total.toLocaleString()} paths found, beginning scan...`);
+  console.log();
+
+  const progressInterval = setInterval(() => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const pct = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
+    const eta = completed > 0
+      ? ` — ETA ${formatEta(Math.round((elapsed / completed) * (total - completed)))}`
+      : '';
+    process.stderr.write(`  hashing: ${completed}/${total} (${pct}%)${eta}\n`);
+    cache.save().catch(console.error);
+  }, 10_000);
+
+  await withConcurrency(64, allPaths, async (filePath) => {
     try {
-      const hash = await cachedSha256(filePath, cache);
+      const [hash, { size }] = await Promise.all([cachedSha256(filePath, cache), stat(filePath)]);
+      completed++;
       const group = hashMap.get(hash);
       if (group) {
-        group.push(filePath);
+        group.paths.push(filePath);
+        group.sizes.push(size);
       } else {
-        hashMap.set(hash, [filePath]);
+        hashMap.set(hash, { paths: [filePath], sizes: [size] });
       }
     } catch (err) {
+      completed++;
       console.warn(`  skipping ${filePath}: ${(err as Error).message}`);
     }
-  }));
+  });
 
-  clearInterval(flushInterval);
+  clearInterval(progressInterval);
   const groups: DuplicateGroup[] = [];
-  for (const [hash, paths] of hashMap) {
-    if (paths.length > 1) groups.push({ hash, paths });
+  for (const [hash, { paths, sizes }] of hashMap) {
+    if (paths.length > 1) groups.push({ hash, paths, sizes });
   }
   return { totalScanned: allPaths.length, groups };
 }
@@ -107,21 +133,19 @@ export async function findSimilar(dirs: string[], threshold = 10, cache: HashCac
       : '';
     process.stderr.write(`  hashing: ${completed}/${total} (${pct}%)${eta}\n`);
     cache.save().catch(console.error);
-  }, 30_000);
+  }, 10_000);
 
-  const settled = await Promise.all(
-    allPaths.map(async (path) => {
-      try {
-        const result = { path, hash: await cachedPhash(path, cache) };
-        completed++;
-        return result;
-      } catch (err) {
-        completed++;
-        console.warn(`  skipping ${path}: ${(err as Error).message}`);
-        return null;
-      }
-    })
-  );
+  const settled: ({ path: string; hash: bigint; size: number } | null)[] = new Array(allPaths.length).fill(null);
+  await withConcurrency(64, allPaths.map((path, i) => ({ path, i })), async ({ path, i }) => {
+    try {
+      const [hash, { size }] = await Promise.all([cachedPhash(path, cache), stat(path)]);
+      completed++;
+      settled[i] = { path, hash, size };
+    } catch (err) {
+      completed++;
+      console.warn(`  skipping ${path}: ${(err as Error).message}`);
+    }
+  });
   clearInterval(progressInterval);
 
   const entries = settled.filter((e) => e !== null);
@@ -133,16 +157,18 @@ export async function findSimilar(dirs: string[], threshold = 10, cache: HashCac
   for (let i = 0; i < entries.length; i++) {
     if (grouped.has(i)) continue;
     const members: string[] = [entries[i].path];
+    const sizes: number[] = [entries[i].size];
     for (let j = i + 1; j < entries.length; j++) {
       if (grouped.has(j)) continue;
       if (hammingDistance(entries[i].hash, entries[j].hash) <= threshold) {
         members.push(entries[j].path);
+        sizes.push(entries[j].size);
         grouped.add(j);
       }
     }
     if (members.length > 1) {
       grouped.add(i);
-      groups.push({ hash: entries[i].hash.toString(16).padStart(16, '0'), paths: members });
+      groups.push({ hash: entries[i].hash.toString(16).padStart(16, '0'), paths: members, sizes });
     }
   }
 

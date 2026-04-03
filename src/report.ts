@@ -1,9 +1,10 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
 interface DuplicateGroup {
   hash: string;
   paths: string[];
+  sizes?: number[];
 }
 
 interface ScanOutput {
@@ -21,13 +22,22 @@ interface FolderPair {
   a: string;
   b: string;
   sharedGroups: number;
+  aDupeFiles: number;
+  bDupeFiles: number;
+  aTotalFiles: number | null;
+  bTotalFiles: number | null;
 }
 
-function analyzeFolderPairs(groups: DuplicateGroup[]): FolderPair[] {
+function analyzeFolderPairs(groups: DuplicateGroup[], folderFileCounts: Map<string, number>): FolderPair[] {
   const pairCounts = new Map<string, number>();
+  const folderDupeFiles = new Map<string, number>();
 
   for (const group of groups) {
     const folders = [...new Set(group.paths.map((p) => dirname(p)))];
+    for (const folder of folders) {
+      const inFolder = group.paths.filter((p) => dirname(p) === folder).length;
+      folderDupeFiles.set(folder, (folderDupeFiles.get(folder) ?? 0) + inFolder);
+    }
     for (let i = 0; i < folders.length; i++) {
       for (let j = i + 1; j < folders.length; j++) {
         const key = [folders[i], folders[j]].sort().join('\0');
@@ -39,9 +49,20 @@ function analyzeFolderPairs(groups: DuplicateGroup[]): FolderPair[] {
   return [...pairCounts.entries()]
     .map(([key, sharedGroups]) => {
       const [a, b] = key.split('\0');
-      return { a, b, sharedGroups };
+      return {
+        a, b, sharedGroups,
+        aDupeFiles: folderDupeFiles.get(a) ?? 0,
+        bDupeFiles: folderDupeFiles.get(b) ?? 0,
+        aTotalFiles: folderFileCounts.get(a) ?? null,
+        bTotalFiles: folderFileCounts.get(b) ?? null,
+      };
     })
     .sort((x, y) => y.sharedGroups - x.sharedGroups);
+}
+
+function fmt(dupes: number, total: number | null): string {
+  if (total === null) return String(dupes);
+  return `${dupes} / ${total} (${Math.round(dupes / total * 100)}%)`;
 }
 
 function renderFolderAnalysis(pairs: FolderPair[]): string {
@@ -50,7 +71,9 @@ function renderFolderAnalysis(pairs: FolderPair[]): string {
   const renderRows = (ps: FolderPair[]) => ps.map((p) => `
     <tr>
       <td>${escapeHtml(p.a)}</td>
+      <td class="pair-count">${fmt(p.aDupeFiles, p.aTotalFiles)}</td>
       <td>${escapeHtml(p.b)}</td>
+      <td class="pair-count">${fmt(p.bDupeFiles, p.bTotalFiles)}</td>
       <td class="pair-count">${p.sharedGroups}</td>
     </tr>`).join('');
 
@@ -70,7 +93,7 @@ function renderFolderAnalysis(pairs: FolderPair[]): string {
     <h2>Folder overlap</h2>
     <p class="folder-analysis-desc">Folder pairs that share the most duplicate groups — likely copies of each other.</p>
     <table>
-      <thead><tr><th>Folder A</th><th>Folder B</th><th>Shared groups</th></tr></thead>
+      <thead><tr><th>Folder A</th><th>Dupes</th><th>Folder B</th><th>Dupes</th><th>Shared groups</th></tr></thead>
       <tbody>${renderRows(top)}</tbody>
     </table>${more}
   </section>`;
@@ -84,14 +107,33 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function renderGroup(group: DuplicateGroup, index: number): string {
-  const images = group.paths.map((p) => `
+  const sizes = group.sizes;
+  const sizesVary = sizes != null && new Set(sizes).size > 1;
+  const maxSize = sizesVary ? Math.max(...sizes!) : null;
+
+  const images = group.paths.map((p, i) => {
+    const size = sizes?.[i];
+    const sizeTag = sizesVary && size != null
+      ? `<span class="file-size${size === maxSize ? ' file-size-largest' : ''}">${fmtBytes(size)}</span>`
+      : '';
+    const folder = dirname(p);
+    return `
     <figure class="img-card">
       <a href="${escapeHtml(fileUrl(p))}" target="_blank">
         <img src="${escapeHtml(fileUrl(p))}" alt="${escapeHtml(basename(p))}" loading="lazy" />
       </a>
-      <figcaption title="${escapeHtml(p)}">${escapeHtml(p)}</figcaption>
-    </figure>`).join('');
+      <figcaption title="${escapeHtml(p)}">${escapeHtml(p)}${sizeTag}
+        <button class="copy-btn" data-path="${escapeHtml(folder)}" title="Copy folder path">📋</button>
+      </figcaption>
+    </figure>`;
+  }).join('');
 
   return `
   <section class="group">
@@ -104,14 +146,14 @@ function renderGroup(group: DuplicateGroup, index: number): string {
   </section>`;
 }
 
-function renderHtml(data: ScanOutput): string {
+function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): string {
   const modeLabel = data.mode === 'exact'
     ? 'Exact (SHA-256)'
     : `Perceptual pHash — threshold ${data.threshold}`;
 
   const sorted = [...data.groups].sort((a, b) => b.paths.length - a.paths.length);
   const groups = sorted.map((g, i) => renderGroup(g, i)).join('');
-  const folderAnalysis = renderFolderAnalysis(analyzeFolderPairs(data.groups));
+  const folderAnalysis = renderFolderAnalysis(analyzeFolderPairs(data.groups, folderFileCounts));
 
   const folderList = data.scannedFolders
     .map((f) => `<li>${escapeHtml(f)}</li>`)
@@ -213,6 +255,30 @@ function renderHtml(data: ScanOutput): string {
     text-align: center;
     max-width: 200px;
   }
+  .file-size {
+    display: block;
+    margin-top: .2rem;
+    font-size: 0.72rem;
+    color: #71717a;
+  }
+  .file-size-largest {
+    color: #16a34a;
+    font-weight: 600;
+  }
+  .copy-btn {
+    display: inline-block;
+    margin-top: .2rem;
+    background: none;
+    border: 1px solid #e4e4e7;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    line-height: 1.4;
+    color: #52525b;
+  }
+  .copy-btn:hover { background: #f4f4f5; }
+  .copy-btn.copied { color: #16a34a; border-color: #16a34a; }
 
   .empty {
     text-align: center;
@@ -270,6 +336,17 @@ ${data.groups.length === 0
     ? '<p class="empty">No duplicates found.</p>'
     : folderAnalysis + groups}
 
+<script>
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    navigator.clipboard.writeText(btn.dataset.path).then(() => {
+      btn.textContent = '✓';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
+    });
+  });
+</script>
 </body>
 </html>`;
 }
@@ -291,6 +368,18 @@ const outputPath = outputArg.split('=')[1];
 const raw = await readFile(inputPath, 'utf-8');
 const data = JSON.parse(raw) as ScanOutput;
 
-const html = renderHtml(data);
+// Count files per folder for all folders that appear in the duplicate groups
+const allFolders = [...new Set(data.groups.flatMap((g) => g.paths.map((p) => dirname(p))))];
+const folderFileCounts = new Map<string, number>();
+await Promise.all(allFolders.map(async (folder) => {
+  try {
+    const entries = await readdir(folder);
+    folderFileCounts.set(folder, entries.length);
+  } catch {
+    // folder unreadable — leave absent so UI shows raw dupe count only
+  }
+}));
+
+const html = renderHtml(data, folderFileCounts);
 await writeFile(outputPath, html);
 console.log(`Report written to ${outputPath}`);
