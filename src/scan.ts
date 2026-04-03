@@ -46,12 +46,16 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
 
   const hashMap = new Map<string, string[]>();
   await Promise.all(allPaths.map(async (filePath) => {
-    const hash = await cachedSha256(filePath, cache);
-    const group = hashMap.get(hash);
-    if (group) {
-      group.push(filePath);
-    } else {
-      hashMap.set(hash, [filePath]);
+    try {
+      const hash = await cachedSha256(filePath, cache);
+      const group = hashMap.get(hash);
+      if (group) {
+        group.push(filePath);
+      } else {
+        hashMap.set(hash, [filePath]);
+      }
+    } catch (err) {
+      console.warn(`  skipping ${filePath}: ${(err as Error).message}`);
     }
   }));
 
@@ -70,9 +74,17 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
 export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache): Promise<ScanResult> {
   const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
 
-  const entries = await Promise.all(
-    allPaths.map(async (path) => ({ path, hash: await cachedPhash(path, cache) }))
+  const settled = await Promise.all(
+    allPaths.map(async (path) => {
+      try {
+        return { path, hash: await cachedPhash(path, cache) };
+      } catch (err) {
+        console.warn(`  skipping ${path}: ${(err as Error).message}`);
+        return null;
+      }
+    })
   );
+  const entries = settled.filter((e) => e !== null);
 
   // O(n²) grouping — fine for typical photo library sizes
   const grouped = new Set<number>();
