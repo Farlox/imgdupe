@@ -3,6 +3,7 @@ import { join, extname } from 'node:path';
 import { hashFile } from './hash.js';
 import { phashFile, hammingDistance } from './phash.js';
 import { HashCache } from './cache.js';
+import { filterOnlineOnlyFiles } from './onedrive.js';
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.heic', '.heif', '.avif']);
 
@@ -41,8 +42,11 @@ async function cachedPhash(filePath: string, cache: HashCache): Promise<bigint> 
 export type DuplicateGroup = { hash: string; paths: string[] };
 export type ScanResult = { totalScanned: number; groups: DuplicateGroup[] };
 
-export async function findDuplicates(dirs: string[], cache: HashCache): Promise<ScanResult> {
-  const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
+export async function findDuplicates(dirs: string[], cache: HashCache, skipOnline = true): Promise<ScanResult> {
+  const allPaths = await filterOnlineOnlyFiles(
+    (await Promise.all(dirs.map(collectImagePaths))).flat(),
+    skipOnline,
+  );
 
   const hashMap = new Map<string, string[]>();
   const flushInterval = setInterval(() => { cache.save().catch(console.error); }, 30_000);
@@ -81,8 +85,11 @@ function formatEta(seconds: number): string {
  * Images whose pHash Hamming distance is <= threshold are grouped together.
  * threshold=0 means identical-looking, ~10 is a reasonable "similar" cutoff.
  */
-export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache): Promise<ScanResult> {
-  const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
+export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache, skipOnline = true): Promise<ScanResult> {
+  const allPaths = await filterOnlineOnlyFiles(
+    (await Promise.all(dirs.map(collectImagePaths))).flat(),
+    skipOnline,
+  );
   const total = allPaths.length;
   let completed = 0;
   const startTime = Date.now();

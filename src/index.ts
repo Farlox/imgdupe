@@ -4,6 +4,7 @@ import { HashCache } from './cache.js';
 
 const args = process.argv.slice(2);
 const exactMode = args.includes('--exact');
+const includeOnline = args.includes('--include-online');
 const thresholdArg = args.find((a) => a.startsWith('--threshold='));
 const threshold = thresholdArg ? parseInt(thresholdArg.split('=')[1], 10) : 10;
 const cacheArg = args.find((a) => a.startsWith('--cache='));
@@ -18,15 +19,17 @@ if (dirs.length === 0) {
   console.error('  --threshold=N     pHash Hamming distance cutoff (default: 10)');
   console.error('  --cache=PATH      cache file location (default: .imgdupe-cache.json)');
   console.error('  --output=PATH     write results as JSON to this file');
+  console.error('  --include-online  include OneDrive online-only files (triggers download on Windows)');
   process.exit(1);
 }
 
 const cache = new HashCache(cachePath);
 await cache.load();
 
+const skipOnline = !includeOnline;
 const { totalScanned, groups } = exactMode
-  ? await findDuplicates(dirs, cache)
-  : await findSimilar(dirs, threshold, cache);
+  ? await findDuplicates(dirs, cache, skipOnline)
+  : await findSimilar(dirs, threshold, cache, skipOnline);
 
 await cache.save();
 
