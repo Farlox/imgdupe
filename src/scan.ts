@@ -87,6 +87,11 @@ export async function findSimilar(dirs: string[], threshold = 10, cache: HashCac
   let completed = 0;
   const startTime = Date.now();
 
+  console.log(
+    `${allPaths.length.toLocaleString()} paths found, beginning scan...`,
+  );
+  console.log();
+
   const progressInterval = setInterval(() => {
     const elapsed = (Date.now() - startTime) / 1000;
     const pct = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
