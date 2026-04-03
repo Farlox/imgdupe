@@ -66,6 +66,13 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
   return { totalScanned: allPaths.length, groups };
 }
 
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
 /**
  * Find visually similar images using perceptual hashing.
  * Images whose pHash Hamming distance is <= threshold are grouped together.
@@ -73,17 +80,34 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
  */
 export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache): Promise<ScanResult> {
   const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
+  const total = allPaths.length;
+  let completed = 0;
+  const startTime = Date.now();
+
+  const progressInterval = setInterval(() => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const pct = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
+    const eta = completed > 0
+      ? ` — ETA ${formatEta(Math.round((elapsed / completed) * (total - completed)))}`
+      : '';
+    process.stderr.write(`  hashing: ${completed}/${total} (${pct}%)${eta}\n`);
+  }, 30_000);
 
   const settled = await Promise.all(
     allPaths.map(async (path) => {
       try {
-        return { path, hash: await cachedPhash(path, cache) };
+        const result = { path, hash: await cachedPhash(path, cache) };
+        completed++;
+        return result;
       } catch (err) {
+        completed++;
         console.warn(`  skipping ${path}: ${(err as Error).message}`);
         return null;
       }
     })
   );
+  clearInterval(progressInterval);
+
   const entries = settled.filter((e) => e !== null);
 
   // O(n²) grouping — fine for typical photo library sizes
