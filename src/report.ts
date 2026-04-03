@@ -1,13 +1,13 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
-interface DuplicateGroup {
+export interface DuplicateGroup {
   hash: string;
   paths: string[];
   sizes?: number[];
 }
 
-interface ScanOutput {
+export interface ScanOutput {
   generatedAt: string;
   mode: 'exact' | 'perceptual';
   threshold?: number;
@@ -146,7 +146,7 @@ function renderGroup(group: DuplicateGroup, index: number): string {
   </section>`;
 }
 
-function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): string {
+export function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): string {
   const modeLabel = data.mode === 'exact'
     ? 'Exact (SHA-256)'
     : `Perceptual pHash — threshold ${data.threshold}`;
@@ -351,35 +351,43 @@ ${data.groups.length === 0
 </html>`;
 }
 
-// --- CLI ---
+// --- Shared helper ---
 
-const args = process.argv.slice(2);
-const inputArg = args.find((a) => a.startsWith('--input='));
-const outputArg = args.find((a) => a.startsWith('--output='));
-
-if (!inputArg || !outputArg) {
-  console.error('Usage: npm run report -- --input=results.json --output=report.html');
-  process.exit(1);
+export async function buildFolderFileCounts(groups: DuplicateGroup[]): Promise<Map<string, number>> {
+  const allFolders = [...new Set(groups.flatMap((g) => g.paths.map((p) => dirname(p))))];
+  const folderFileCounts = new Map<string, number>();
+  await Promise.all(allFolders.map(async (folder) => {
+    try {
+      const entries = await readdir(folder);
+      folderFileCounts.set(folder, entries.length);
+    } catch {
+      // folder unreadable — leave absent so UI shows raw dupe count only
+    }
+  }));
+  return folderFileCounts;
 }
 
-const inputPath = inputArg.split('=')[1];
-const outputPath = outputArg.split('=')[1];
+// --- CLI ---
 
-const raw = await readFile(inputPath, 'utf-8');
-const data = JSON.parse(raw) as ScanOutput;
+async function main() {
+  const args = process.argv.slice(2);
+  const inputArg = args.find((a) => a.startsWith('--input='));
+  const outputArg = args.find((a) => a.startsWith('--output='));
 
-// Count files per folder for all folders that appear in the duplicate groups
-const allFolders = [...new Set(data.groups.flatMap((g) => g.paths.map((p) => dirname(p))))];
-const folderFileCounts = new Map<string, number>();
-await Promise.all(allFolders.map(async (folder) => {
-  try {
-    const entries = await readdir(folder);
-    folderFileCounts.set(folder, entries.length);
-  } catch {
-    // folder unreadable — leave absent so UI shows raw dupe count only
+  if (!inputArg || !outputArg) {
+    console.error('Usage: npm run report -- --input=results.json --output=report.html');
+    process.exit(1);
   }
-}));
 
-const html = renderHtml(data, folderFileCounts);
-await writeFile(outputPath, html);
-console.log(`Report written to ${outputPath}`);
+  const inputPath = inputArg.split('=')[1];
+  const outputPath = outputArg.split('=')[1];
+
+  const raw = await readFile(inputPath, 'utf-8');
+  const data = JSON.parse(raw) as ScanOutput;
+  const folderFileCounts = await buildFolderFileCounts(data.groups);
+  const html = renderHtml(data, folderFileCounts);
+  await writeFile(outputPath, html);
+  console.log(`Report written to ${outputPath}`);
+}
+
+if (process.argv[1]?.includes('report')) main();
