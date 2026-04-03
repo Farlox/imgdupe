@@ -50,7 +50,8 @@ function renderHtml(data: ScanOutput): string {
     ? 'Exact (SHA-256)'
     : `Perceptual pHash — threshold ${data.threshold}`;
 
-  const groups = data.groups.map((g, i) => renderGroup(g, i)).join('');
+  const sorted = [...data.groups].sort((a, b) => b.paths.length - a.paths.length);
+  const groups = sorted.map((g, i) => renderGroup(g, i)).join('');
 
   const folderList = data.scannedFolders
     .map((f) => `<li>${escapeHtml(f)}</li>`)
