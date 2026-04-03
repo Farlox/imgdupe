@@ -39,8 +39,9 @@ async function cachedPhash(filePath: string, cache: HashCache): Promise<bigint> 
 }
 
 export type DuplicateGroup = { hash: string; paths: string[] };
+export type ScanResult = { totalScanned: number; groups: DuplicateGroup[] };
 
-export async function findDuplicates(dirs: string[], cache: HashCache): Promise<DuplicateGroup[]> {
+export async function findDuplicates(dirs: string[], cache: HashCache): Promise<ScanResult> {
   const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
 
   const hashMap = new Map<string, string[]>();
@@ -54,11 +55,11 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
     }
   }));
 
-  const duplicates: DuplicateGroup[] = [];
+  const groups: DuplicateGroup[] = [];
   for (const [hash, paths] of hashMap) {
-    if (paths.length > 1) duplicates.push({ hash, paths });
+    if (paths.length > 1) groups.push({ hash, paths });
   }
-  return duplicates;
+  return { totalScanned: allPaths.length, groups };
 }
 
 /**
@@ -66,7 +67,7 @@ export async function findDuplicates(dirs: string[], cache: HashCache): Promise<
  * Images whose pHash Hamming distance is <= threshold are grouped together.
  * threshold=0 means identical-looking, ~10 is a reasonable "similar" cutoff.
  */
-export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache): Promise<DuplicateGroup[]> {
+export async function findSimilar(dirs: string[], threshold = 10, cache: HashCache): Promise<ScanResult> {
   const allPaths = (await Promise.all(dirs.map(collectImagePaths))).flat();
 
   const entries = await Promise.all(
@@ -93,5 +94,5 @@ export async function findSimilar(dirs: string[], threshold = 10, cache: HashCac
     }
   }
 
-  return groups;
+  return { totalScanned: allPaths.length, groups };
 }
