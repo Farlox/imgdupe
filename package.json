@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "report": "tsx src/report.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
