@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, dirname } from 'node:path';
 
 interface DuplicateGroup {
   hash: string;
@@ -15,6 +15,65 @@ interface ScanOutput {
   totalDuplicateGroups: number;
   totalDuplicateFiles: number;
   groups: DuplicateGroup[];
+}
+
+interface FolderPair {
+  a: string;
+  b: string;
+  sharedGroups: number;
+}
+
+function analyzeFolderPairs(groups: DuplicateGroup[]): FolderPair[] {
+  const pairCounts = new Map<string, number>();
+
+  for (const group of groups) {
+    const folders = [...new Set(group.paths.map((p) => dirname(p)))];
+    for (let i = 0; i < folders.length; i++) {
+      for (let j = i + 1; j < folders.length; j++) {
+        const key = [folders[i], folders[j]].sort().join('\0');
+        pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  return [...pairCounts.entries()]
+    .map(([key, sharedGroups]) => {
+      const [a, b] = key.split('\0');
+      return { a, b, sharedGroups };
+    })
+    .sort((x, y) => y.sharedGroups - x.sharedGroups);
+}
+
+function renderFolderAnalysis(pairs: FolderPair[]): string {
+  if (pairs.length === 0) return '';
+
+  const renderRows = (ps: FolderPair[]) => ps.map((p) => `
+    <tr>
+      <td>${escapeHtml(p.a)}</td>
+      <td>${escapeHtml(p.b)}</td>
+      <td class="pair-count">${p.sharedGroups}</td>
+    </tr>`).join('');
+
+  const top = pairs.slice(0, 10);
+  const rest = pairs.slice(10);
+
+  const more = rest.length > 0 ? `
+    <details class="folder-more">
+      <summary>${rest.length} more…</summary>
+      <table>
+        <tbody>${renderRows(rest)}</tbody>
+      </table>
+    </details>` : '';
+
+  return `
+  <section class="folder-analysis">
+    <h2>Folder overlap</h2>
+    <p class="folder-analysis-desc">Folder pairs that share the most duplicate groups — likely copies of each other.</p>
+    <table>
+      <thead><tr><th>Folder A</th><th>Folder B</th><th>Shared groups</th></tr></thead>
+      <tbody>${renderRows(top)}</tbody>
+    </table>${more}
+  </section>`;
 }
 
 function fileUrl(absPath: string): string {
@@ -52,6 +111,7 @@ function renderHtml(data: ScanOutput): string {
 
   const sorted = [...data.groups].sort((a, b) => b.paths.length - a.paths.length);
   const groups = sorted.map((g, i) => renderGroup(g, i)).join('');
+  const folderAnalysis = renderFolderAnalysis(analyzeFolderPairs(data.groups));
 
   const folderList = data.scannedFolders
     .map((f) => `<li>${escapeHtml(f)}</li>`)
@@ -160,6 +220,26 @@ function renderHtml(data: ScanOutput): string {
     color: #71717a;
     font-size: 1.1rem;
   }
+
+  .folder-analysis {
+    background: #fff;
+    border: 1px solid #e4e4e7;
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 2rem;
+  }
+  .folder-analysis h2 { font-size: 1rem; font-weight: 700; margin-bottom: .25rem; }
+  .folder-analysis-desc { font-size: 0.82rem; color: #71717a; margin-bottom: 1rem; }
+  .folder-analysis table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .folder-analysis th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .05em; color: #71717a; padding: .4rem .75rem; border-bottom: 1px solid #e4e4e7; }
+  .folder-analysis td { padding: .4rem .75rem; border-bottom: 1px solid #f4f4f5; word-break: break-all; }
+  .folder-analysis tr:last-child td { border-bottom: none; }
+  .pair-count { text-align: right; font-weight: 600; white-space: nowrap; }
+  .folder-more { margin-top: .5rem; }
+  .folder-more summary { font-size: 0.82rem; color: #6366f1; cursor: pointer; padding: .25rem 0; }
+  .folder-more table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: .5rem; }
+  .folder-more td { padding: .4rem .75rem; border-bottom: 1px solid #f4f4f5; word-break: break-all; }
+  .folder-more tr:last-child td { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -188,7 +268,7 @@ function renderHtml(data: ScanOutput): string {
 
 ${data.groups.length === 0
     ? '<p class="empty">No duplicates found.</p>'
-    : groups}
+    : folderAnalysis + groups}
 
 </body>
 </html>`;
