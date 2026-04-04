@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "report": "tsx src/report.ts",
+    "serve": "tsx src/http.ts",
     "full": "tsx scripts/full.ts",
     "exact": "tsx scripts/exact.ts"
   },

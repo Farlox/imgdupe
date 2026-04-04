@@ -1,13 +1,13 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
-interface DuplicateGroup {
+export interface DuplicateGroup {
   hash: string;
   paths: string[];
   sizes?: number[];
 }
 
-interface ScanOutput {
+export interface ScanOutput {
   generatedAt: string;
   mode: 'exact' | 'perceptual';
   threshold?: number;
@@ -99,10 +99,6 @@ function renderFolderAnalysis(pairs: FolderPair[]): string {
   </section>`;
 }
 
-function fileUrl(absPath: string): string {
-  return 'file://' + absPath;
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -113,7 +109,7 @@ function fmtBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderGroup(group: DuplicateGroup, index: number): string {
+function renderGroup(group: DuplicateGroup, index: number, toUrl: (absPath: string) => string): string {
   const sizes = group.sizes;
   const sizesVary = sizes != null && new Set(sizes).size > 1;
   const maxSize = sizesVary ? Math.max(...sizes!) : null;
@@ -123,14 +119,14 @@ function renderGroup(group: DuplicateGroup, index: number): string {
     const sizeTag = sizesVary && size != null
       ? `<span class="file-size${size === maxSize ? ' file-size-largest' : ''}">${fmtBytes(size)}</span>`
       : '';
-    const folder = dirname(p);
+    const url = escapeHtml(toUrl(p));
     return `
     <figure class="img-card">
-      <a href="${escapeHtml(fileUrl(p))}" target="_blank">
-        <img src="${escapeHtml(fileUrl(p))}" alt="${escapeHtml(basename(p))}" loading="lazy" />
+      <a href="${url}" target="_blank">
+        <img src="${url}" alt="${escapeHtml(basename(p))}" loading="lazy" />
       </a>
       <figcaption title="${escapeHtml(p)}">${escapeHtml(p)}${sizeTag}
-        <button class="copy-btn" data-path="${escapeHtml(folder)}" title="Copy folder path">📋</button>
+        <button class="open-folder-btn" data-path="${escapeHtml(p)}" title="Open folder in explorer">📂</button>
       </figcaption>
     </figure>`;
   }).join('');
@@ -146,13 +142,17 @@ function renderGroup(group: DuplicateGroup, index: number): string {
   </section>`;
 }
 
-function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): string {
+export function renderHtml(
+  data: ScanOutput,
+  folderFileCounts: Map<string, number>,
+  toUrl: (absPath: string) => string = (p) => 'file://' + p,
+): string {
   const modeLabel = data.mode === 'exact'
     ? 'Exact (SHA-256)'
     : `Perceptual pHash — threshold ${data.threshold}`;
 
   const sorted = [...data.groups].sort((a, b) => b.paths.length - a.paths.length);
-  const groups = sorted.map((g, i) => renderGroup(g, i)).join('');
+  const groups = sorted.map((g, i) => renderGroup(g, i, toUrl)).join('');
   const folderAnalysis = renderFolderAnalysis(analyzeFolderPairs(data.groups, folderFileCounts));
 
   const folderList = data.scannedFolders
@@ -265,7 +265,7 @@ function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): st
     color: #16a34a;
     font-weight: 600;
   }
-  .copy-btn {
+  .open-folder-btn {
     display: inline-block;
     margin-top: .2rem;
     background: none;
@@ -277,8 +277,7 @@ function renderHtml(data: ScanOutput, folderFileCounts: Map<string, number>): st
     line-height: 1.4;
     color: #52525b;
   }
-  .copy-btn:hover { background: #f4f4f5; }
-  .copy-btn.copied { color: #16a34a; border-color: #16a34a; }
+  .open-folder-btn:hover { background: #f4f4f5; }
 
   .empty {
     text-align: center;
@@ -338,48 +337,52 @@ ${data.groups.length === 0
 
 <script>
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.copy-btn');
+    const btn = e.target.closest('.open-folder-btn');
     if (!btn) return;
-    navigator.clipboard.writeText(btn.dataset.path).then(() => {
-      btn.textContent = '✓';
-      btn.classList.add('copied');
-      setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
-    });
+    fetch('/api/open-folder?path=' + encodeURIComponent(btn.dataset.path)).catch(() => {});
   });
 </script>
 </body>
 </html>`;
 }
 
-// --- CLI ---
+// --- Shared helper ---
 
-const args = process.argv.slice(2);
-const inputArg = args.find((a) => a.startsWith('--input='));
-const outputArg = args.find((a) => a.startsWith('--output='));
-
-if (!inputArg || !outputArg) {
-  console.error('Usage: npm run report -- --input=results.json --output=report.html');
-  process.exit(1);
+export async function buildFolderFileCounts(groups: DuplicateGroup[]): Promise<Map<string, number>> {
+  const allFolders = [...new Set(groups.flatMap((g) => g.paths.map((p) => dirname(p))))];
+  const folderFileCounts = new Map<string, number>();
+  await Promise.all(allFolders.map(async (folder) => {
+    try {
+      const entries = await readdir(folder);
+      folderFileCounts.set(folder, entries.length);
+    } catch {
+      // folder unreadable — leave absent so UI shows raw dupe count only
+    }
+  }));
+  return folderFileCounts;
 }
 
-const inputPath = inputArg.split('=')[1];
-const outputPath = outputArg.split('=')[1];
+// --- CLI ---
 
-const raw = await readFile(inputPath, 'utf-8');
-const data = JSON.parse(raw) as ScanOutput;
+async function main() {
+  const args = process.argv.slice(2);
+  const inputArg = args.find((a) => a.startsWith('--input='));
+  const outputArg = args.find((a) => a.startsWith('--output='));
 
-// Count files per folder for all folders that appear in the duplicate groups
-const allFolders = [...new Set(data.groups.flatMap((g) => g.paths.map((p) => dirname(p))))];
-const folderFileCounts = new Map<string, number>();
-await Promise.all(allFolders.map(async (folder) => {
-  try {
-    const entries = await readdir(folder);
-    folderFileCounts.set(folder, entries.length);
-  } catch {
-    // folder unreadable — leave absent so UI shows raw dupe count only
+  if (!inputArg || !outputArg) {
+    console.error('Usage: npm run report -- --input=results.json --output=report.html');
+    process.exit(1);
   }
-}));
 
-const html = renderHtml(data, folderFileCounts);
-await writeFile(outputPath, html);
-console.log(`Report written to ${outputPath}`);
+  const inputPath = inputArg.split('=')[1];
+  const outputPath = outputArg.split('=')[1];
+
+  const raw = await readFile(inputPath, 'utf-8');
+  const data = JSON.parse(raw) as ScanOutput;
+  const folderFileCounts = await buildFolderFileCounts(data.groups);
+  const html = renderHtml(data, folderFileCounts);
+  await writeFile(outputPath, html);
+  console.log(`Report written to ${outputPath}`);
+}
+
+if (process.argv[1]?.includes('report')) main();
