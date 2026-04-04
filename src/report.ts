@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 
 export interface DuplicateGroup {
@@ -362,27 +362,3 @@ export async function buildFolderFileCounts(groups: DuplicateGroup[]): Promise<M
   return folderFileCounts;
 }
 
-// --- CLI ---
-
-async function main() {
-  const args = process.argv.slice(2);
-  const inputArg = args.find((a) => a.startsWith('--input='));
-  const outputArg = args.find((a) => a.startsWith('--output='));
-
-  if (!inputArg || !outputArg) {
-    console.error('Usage: npm run report -- --input=results.json --output=report.html');
-    process.exit(1);
-  }
-
-  const inputPath = inputArg.split('=')[1];
-  const outputPath = outputArg.split('=')[1];
-
-  const raw = await readFile(inputPath, 'utf-8');
-  const data = JSON.parse(raw) as ScanOutput;
-  const folderFileCounts = await buildFolderFileCounts(data.groups);
-  const html = renderHtml(data, folderFileCounts);
-  await writeFile(outputPath, html);
-  console.log(`Report written to ${outputPath}`);
-}
-
-if (process.argv[1]?.includes('report')) main();
