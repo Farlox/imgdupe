@@ -345,10 +345,7 @@ const state = {
 };
 
 function initFileActions(g) {
-  const sizes = g.sizes ?? [];
-  const allEqual = sizes.length === 0 || new Set(sizes).size === 1;
-  const keepIdx = allEqual ? 0 : sizes.indexOf(Math.max(...sizes));
-  return g.paths.map((_, i) => i === keepIdx ? 'keep' : 'delete');
+  return g.paths.map(() => 'ignore');
 }
 
 // --- State mutations ---
