@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { resolve, isAbsolute } from 'node:path';
+import { resolve, isAbsolute, dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 import { renderHtml, buildFolderFileCounts, type ScanOutput } from './report.js';
 
 const args = process.argv.slice(2);
@@ -22,19 +23,28 @@ async function readScanOutput(filePath: string): Promise<ScanOutput> {
   return JSON.parse(raw) as ScanOutput;
 }
 
+function isReport(parsed: unknown): boolean {
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  const o = parsed as Record<string, unknown>;
+  return typeof o['generatedAt'] === 'string' && typeof o['mode'] === 'string';
+}
+
 async function serveIndex(res: ServerResponse): Promise<void> {
   const entries = await readdir(scanDir);
   const jsonFiles = entries.filter((e) => e.endsWith('.json'));
 
-  const rows = await Promise.all(jsonFiles.map(async (name) => {
+  const rows = (await Promise.all(jsonFiles.map(async (name) => {
     try {
-      const s = await stat(resolve(scanDir, name));
+      const filePath = resolve(scanDir, name);
+      const [raw, s] = await Promise.all([readFile(filePath, 'utf-8'), stat(filePath)]);
+      const parsed = JSON.parse(raw);
+      if (!isReport(parsed)) return null;
       const modified = s.mtime.toLocaleString();
       return `<tr><td><a href="/?file=${encodeURIComponent(name)}">${escapeHtml(name)}</a></td><td>${escapeHtml(modified)}</td></tr>`;
     } catch {
-      return `<tr><td><a href="/?file=${encodeURIComponent(name)}">${escapeHtml(name)}</a></td><td>—</td></tr>`;
+      return null;
     }
-  }));
+  }))).filter((r): r is string => r !== null);
 
   const body = `<!DOCTYPE html>
 <html lang="en">
@@ -63,7 +73,7 @@ async function serveIndex(res: ServerResponse): Promise<void> {
 <div class="card">
 ${rows.length > 0
     ? `<table><thead><tr><th>File</th><th>Modified</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
-    : '<p class="empty">No JSON files found in this directory.</p>'}
+    : '<p class="empty">No imgdupe reports found in this directory.</p>'}
 </div>
 </body>
 </html>`;
@@ -109,6 +119,25 @@ async function serveReport(file: string, res: ServerResponse): Promise<void> {
   res.end(html);
 }
 
+function openFolder(filePath: string, res: ServerResponse): void {
+  if (!isAbsolute(filePath)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Bad Request: path must be absolute');
+    return;
+  }
+  const [cmd, args, opts] = process.platform === 'win32'
+    ? [`explorer.exe /select,"${filePath}"`, [], { shell: true, detached: true, stdio: 'ignore' }] as const
+    : process.platform === 'darwin'
+    ? ['open', ['-R', filePath], { shell: false, detached: true, stdio: 'ignore' }] as const
+    : ['xdg-open', [dirname(filePath)], { shell: false, detached: true, stdio: 'ignore' }] as const;
+  console.log('[openFolder] cmd=%s args=%o', cmd, args);
+  const child = spawn(cmd, args, opts);
+  child.on('close', (code) => console.log('[openFolder] exited code=%d', code));
+  child.unref();
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+}
+
 async function serveResult(file: string, res: ServerResponse): Promise<void> {
   const filePath = resolveFile(file);
   const raw = await readFile(filePath, 'utf-8');
@@ -136,6 +165,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   } else if (pathname === '/img') {
     const imgPath = url.searchParams.get('path') ?? '';
     await serveImage(imgPath, res);
+  } else if (pathname === '/api/open-folder') {
+    const folderPath = url.searchParams.get('path') ?? '';
+    openFolder(folderPath, res);
   } else if (pathname === '/api/result') {
     if (!file) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });

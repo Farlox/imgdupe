@@ -119,7 +119,6 @@ function renderGroup(group: DuplicateGroup, index: number, toUrl: (absPath: stri
     const sizeTag = sizesVary && size != null
       ? `<span class="file-size${size === maxSize ? ' file-size-largest' : ''}">${fmtBytes(size)}</span>`
       : '';
-    const folder = dirname(p);
     const url = escapeHtml(toUrl(p));
     return `
     <figure class="img-card">
@@ -127,7 +126,7 @@ function renderGroup(group: DuplicateGroup, index: number, toUrl: (absPath: stri
         <img src="${url}" alt="${escapeHtml(basename(p))}" loading="lazy" />
       </a>
       <figcaption title="${escapeHtml(p)}">${escapeHtml(p)}${sizeTag}
-        <button class="copy-btn" data-path="${escapeHtml(folder)}" title="Copy folder path">📋</button>
+        <button class="open-folder-btn" data-path="${escapeHtml(p)}" title="Open folder in explorer">📂</button>
       </figcaption>
     </figure>`;
   }).join('');
@@ -266,7 +265,7 @@ export function renderHtml(
     color: #16a34a;
     font-weight: 600;
   }
-  .copy-btn {
+  .open-folder-btn {
     display: inline-block;
     margin-top: .2rem;
     background: none;
@@ -278,8 +277,7 @@ export function renderHtml(
     line-height: 1.4;
     color: #52525b;
   }
-  .copy-btn:hover { background: #f4f4f5; }
-  .copy-btn.copied { color: #16a34a; border-color: #16a34a; }
+  .open-folder-btn:hover { background: #f4f4f5; }
 
   .empty {
     text-align: center;
@@ -339,13 +337,9 @@ ${data.groups.length === 0
 
 <script>
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.copy-btn');
+    const btn = e.target.closest('.open-folder-btn');
     if (!btn) return;
-    navigator.clipboard.writeText(btn.dataset.path).then(() => {
-      btn.textContent = '✓';
-      btn.classList.add('copied');
-      setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1500);
-    });
+    fetch('/api/open-folder?path=' + encodeURIComponent(btn.dataset.path)).catch(() => {});
   });
 </script>
 </body>
